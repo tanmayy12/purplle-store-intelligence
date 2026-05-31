@@ -29,6 +29,7 @@ async def lifespan(app: FastAPI):
     from app.consumers.tracking_consumer import messages_processed
 
     init_db()
+
     #start_consumer()
 
     for _ in range(30):
@@ -36,30 +37,11 @@ async def lifespan(app: FastAPI):
         if messages_processed() > 100:
             break
 
-    db = SessionLocal()
-    try:
-        engine = SessionEngine(db)
-        engine.close_expired_sessions()
-        engine.correlate_pos_transactions()
-        AnomalyDetector(db).run_hourly_checks()
-        AnomalyDetector(db).detect_loitering()
-        MetricsAggregator(db).refresh()
-        db.commit()
-    finally:
-        db.close()
+    print("STARTUP TEST: skipping analytics jobs")
+
     yield
-    stop_consumer()
-    db = SessionLocal()
-    try:
-        engine = SessionEngine(db)
-        engine.close_expired_sessions()
-        engine.correlate_pos_transactions()
-        AnomalyDetector(db).run_hourly_checks()
-        AnomalyDetector(db).detect_loitering()
-        MetricsAggregator(db).refresh()
-        db.commit()
-    finally:
-        db.close()
+
+    print("SHUTDOWN TEST")
 
 
 app = FastAPI(
