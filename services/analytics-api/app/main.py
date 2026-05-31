@@ -29,7 +29,7 @@ async def lifespan(app: FastAPI):
     from app.consumers.tracking_consumer import messages_processed
 
     init_db()
-    start_consumer()
+    #start_consumer()
 
     for _ in range(30):
         time.sleep(1)
