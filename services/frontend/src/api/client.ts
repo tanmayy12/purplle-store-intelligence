@@ -79,7 +79,8 @@ export interface AnomaliesResponse {
   items: AnomalyItem[];
 }
 
-const API_BASE = "/api/v1";
+const API_BASE =
+  "https://purplle-store-intelligence-api.onrender.com/api/v1";
 
 async function fetchJson<T>(path: string): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`);
