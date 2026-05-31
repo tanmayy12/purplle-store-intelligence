@@ -1,0 +1,117 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: store
+      POSTGRES_PASSWORD: tanmay12
+      POSTGRES_DB: store_intelligence
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U store -d store_intelligence"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - store-network
+
+  redpanda:
+    image: redpandadata/redpanda:v24.1.1
+    command:
+      - redpanda
+      - start
+      - --overprovisioned
+      - --smp=1
+      - --memory=512M
+      - --reserve-memory=0M
+      - --node-id=0
+      - --check=false
+      - --kafka-addr=PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr=PLAINTEXT://redpanda:9092
+    healthcheck:
+      test: ["CMD", "rpk", "cluster", "health"]
+      interval: 5s
+      timeout: 10s
+      retries: 15
+    networks:
+      - store-network
+
+  init-seed:
+    build:
+      context: ./services/analytics-api
+      dockerfile: Dockerfile
+    env_file: .env
+    volumes:
+      - ./config:/config:ro
+      - ./Ground Truth CSV.csv:/data/seed/ground_truth_pos.csv:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    command: ["python", "-m", "app.seed.run_init"]
+    restart: "no"
+    networks:
+      - store-network
+
+  analytics-api:
+    build:
+      context: ./services/analytics-api
+      dockerfile: Dockerfile
+    env_file: .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./config:/config:ro
+    depends_on:
+      init-seed:
+        condition: service_completed_successfully
+      cv-pipeline:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - store-network
+
+  cv-pipeline:
+    build:
+      context: ./services/cv-pipeline
+      dockerfile: Dockerfile
+    env_file: .env
+    volumes:
+      - ./config:/config:ro
+      - ./data/video:/data/video:ro
+      - ./cctv_footage:/data/cctv:ro
+      - ./Ground Truth CSV.csv:/data/seed/ground_truth_pos.csv:ro
+    depends_on:
+      init-seed:
+        condition: service_completed_successfully
+      redpanda:
+        condition: service_healthy
+    restart: "no"
+    networks:
+      - store-network
+
+  frontend:
+    build:
+      context: ./services/frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:80"
+    depends_on:
+      analytics-api:
+        condition: service_healthy
+    networks:
+      - store-network
+
+volumes:
+  pg_data:
+
+networks:
+  store-network:
+    driver: bridge

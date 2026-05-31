@@ -1,0 +1,4 @@
+Place CCTV `.mp4` files here, or use the folder:
+`cctv_footage/`
+
+Docker mounts that folder to `/data/cctv` automatically.

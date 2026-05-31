@@ -1,0 +1,1056 @@
+# =============================================================================
+# Purplle Store Intelligence — Zone Configuration
+# Store : ST1008 — Brigade_Bangalore
+# Source: Store Layout Excel.xlsx (F.O.H floor plan, revised layout)
+# =============================================================================
+#
+# Coordinate system
+#   - Normalized frame coordinates in range [0.0, 1.0]
+#   - Origin: top-left of camera frame (overhead / angled FOH view)
+#   - x increases left → right, y increases top → bottom
+#   - Polygons use clockwise vertex order, closed implicitly
+#
+# Calibrated against floor-plan dimensions (mm):
+#   Store width  ≈ 7500 mm
+#   Store height ≈ 4020 mm
+#   Entry wall   : left (Existing Glass + inward-swing door)
+#   Cash counter : right wall (710 mm from top shelf, 1210 mm from bottom shelf)
+#   Fragrance island : 2594 mm from left wall, 500×900 mm, vertically centred
+#   Makeup units     : 1347 mm east of fragrance island, ~900 mm wide
+#   Queue gap        : 2000 mm between makeup units and cash counter
+#
+# NOTE: After `docker compose up`, fine-tune polygons by overlaying this config
+#       on the bundled CCTV frame using the calibration script (see docs/ZONES.md).
+# =============================================================================
+
+version: "1.0"
+schema: store-zones-v1
+
+store:
+  store_id: ST1008
+  store_name: Brigade_Bangalore
+  city: Bangalore
+  layout_label: FOH_REVISED
+  operating_date: "2026-04-10"
+
+coordinate_system:
+  type: normalized
+  origin: top_left
+  units: fraction_of_frame
+  layout_reference_mm:
+    width: 7500
+    height: 4020
+
+# ---------------------------------------------------------------------------
+# Entry / Exit lines — used for footfall counting (line-crossing algorithm)
+# ---------------------------------------------------------------------------
+lines:
+  entry_lines:
+    - line_id: main_entrance_in
+      name: Main Entrance (Inbound)
+      zone_id: ENTRY_GATE
+      # Vertical line at the interior edge of the glass door
+      start: { x: 0.070, y: 0.340 }
+      end:   { x: 0.070, y: 0.660 }
+      direction: inbound          # positive cross = entering store
+      inward_normal: [1, 0]
+      debounce_frames: 5
+      min_cross_velocity: 0.001
+      count_footfall: true
+
+  exit_lines:
+    - line_id: main_entrance_out
+      name: Main Entrance (Outbound)
+      zone_id: EXIT_GATE
+      start: { x: 0.070, y: 0.340 }
+      end:   { x: 0.070, y: 0.660 }
+      direction: outbound         # positive cross = leaving store
+      outward_normal: [-1, 0]
+      debounce_frames: 5
+      count_exit: true
+
+# ---------------------------------------------------------------------------
+# Global analytics thresholds
+# ---------------------------------------------------------------------------
+analytics:
+  session:
+    reentry_cooldown_sec: 120
+    bounce_threshold_sec: 30
+    inactivity_timeout_sec: 1800
+
+  dwell:
+    engaged_min_sec: 60           # funnel "engaged" stage
+    checkout_min_sec: 15          # funnel "checkout_proximity" stage
+    heatmap_bucket_sec: 30
+
+  queue:
+    checkout_queue_zone_id: QUEUE_CHECKOUT
+    min_queue_dwell_sec: 20
+    queue_length_alert: 4         # persons in queue zone
+    max_wait_time_alert_sec: 300
+
+  crowd:
+    crowd_zones:
+      - FOH_MAIN
+      - QUEUE_CHECKOUT
+      - TOP_AISLE
+      - BOTTOM_AISLE
+    density_alert_persons: 12       # total in FOH_MAIN
+    queue_crowd_alert_persons: 6  # total in QUEUE_CHECKOUT
+
+  conversion:
+    checkout_zone_id: CHECKOUT
+    pos_match_window_before_sec: 600
+    pos_match_window_after_sec: 120
+
+# ---------------------------------------------------------------------------
+# Zone definitions
+# ---------------------------------------------------------------------------
+zones:
+
+  # =========================================================================
+  # 1. ENTRY / EXIT AREAS
+  # =========================================================================
+
+  - zone_id: ENTRY_GATE
+    zone_name: Entry Gate
+    zone_type: entry
+    category: ingress
+    priority: 100
+    is_staff_only: false
+    department_map: null
+    color: "#22C55E"
+    capabilities:
+      footfall: true
+      dwell: true
+      heatmap: true
+      conversion: false
+      queue: false
+      crowd: true
+    polygon:
+      - { x: 0.000, y: 0.280 }
+      - { x: 0.120, y: 0.280 }
+      - { x: 0.120, y: 0.720 }
+      - { x: 0.000, y: 0.720 }
+    description: >
+      Existing glass entrance wall with inward-swing door and BACKLIT sign.
+      Primary footfall counting zone. Includes immediate decompression area
+      just inside the door.
+
+  - zone_id: EXIT_GATE
+    zone_name: Exit Gate
+    zone_type: exit
+    category: egress
+    priority: 100
+    is_staff_only: false
+    department_map: null
+    color: "#EF4444"
+    capabilities:
+      footfall: true
+      dwell: false
+      heatmap: true
+      conversion: false
+      queue: false
+      crowd: false
+    polygon:
+      - { x: 0.000, y: 0.320 }
+      - { x: 0.100, y: 0.320 }
+      - { x: 0.100, y: 0.680 }
+      - { x: 0.000, y: 0.680 }
+    description: >
+      Outbound detection overlay on the same physical door as entry.
+      Used for exit counting, dwell-at-exit, and re-entry session logic.
+
+  # =========================================================================
+  # 2. FRONT OF HOUSE & MOVEMENT PATHS
+  # =========================================================================
+
+  - zone_id: FOH_MAIN
+    zone_name: Front of House — Main Circulation
+    zone_type: foh
+    category: movement
+    priority: 10
+    is_staff_only: false
+    department_map: null
+    color: "#94A3B8"
+    capabilities:
+      footfall: false
+      dwell: true
+      heatmap: true
+      conversion: false
+      queue: false
+      crowd: true
+    crowd:
+      max_occupancy: 15
+      alert_threshold: 12
+    polygon:
+      - { x: 0.100, y: 0.150 }
+      - { x: 0.870, y: 0.150 }
+      - { x: 0.870, y: 0.850 }
+      - { x: 0.100, y: 0.850 }
+    description: >
+      Primary open FOH area. First destination after entry; connects all
+      aisles, islands, and checkout. Used for crowd density and path analysis.
+
+  - zone_id: FOH_ENTRY_BUFFER
+    zone_name: Entry Buffer / Decompression
+    zone_type: foh
+    category: movement
+    priority: 20
+    is_staff_only: false
+    department_map: null
+    color: "#64748B"
+    capabilities:
+      footfall: false
+      dwell: true
+      heatmap: true
+      conversion: false
+      queue: false
+      crowd: true
+    polygon:
+      - { x: 0.100, y: 0.280 }
+      - { x: 0.320, y: 0.280 }
+      - { x: 0.320, y: 0.720 }
+      - { x: 0.100, y: 0.720 }
+    description: >
+      Immediate post-entry zone (left FOH). Captures hesitation, group
+      gathering, and bounce behaviour before customers enter aisles.
+
+  - zone_id: TOP_AISLE
+    zone_name: Top Aisle — Skincare Corridor
+    zone_type: aisle
+    category: movement
+    priority: 15
+    is_staff_only: false
+    department_map: skin
+    color: "#CBD5E1"
+    capabilities:
+      footfall: false
+      dwell: true
+      heatmap: true
+      conversion: false
+      queue: false
+      crowd: true
+    polygon:
+      - { x: 0.120, y: 0.150 }
+      - { x: 0.870, y: 0.150 }
+      - { x: 0.870, y: 0.276 }
+      - { x: 0.120, y: 0.276 }
+    description: >
+      Horizontal movement path between top perimeter brands and central
+      islands. Width ≈ 1110 mm per floor plan.
+
+  - zone_id: BOTTOM_AISLE
+    zone_name: Bottom Aisle — Makeup Corridor
+    zone_type: aisle
+    category: movement
+    priority: 15
+    is_staff_only: false
+    department_map: makeup
+    color: "#CBD5E1"
+    capabilities:
+      footfall: false
+      dwell: true
+      heatmap: true
+      conversion: false
+      queue: false
+      crowd: true
+    polygon:
+      - { x: 0.120, y: 0.724 }
+      - { x: 0.870, y: 0.724 }
+      - { x: 0.870, y: 0.850 }
+      - { x: 0.120, y: 0.850 }
+    description: >
+      Horizontal movement path between bottom perimeter brands and central
+      islands. Primary makeup browsing corridor.
+
+  - zone_id: CENTER_AISLE
+    zone_name: Center Aisle — Island Corridor
+    zone_type: aisle
+    category: movement
+    priority: 15
+    is_staff_only: false
+    department_map: null
+    color: "#E2E8F0"
+    capabilities:
+      footfall: false
+      dwell: true
+      heatmap: true
+      conversion: false
+      queue: false
+      crowd: true
+    polygon:
+      - { x: 0.320, y: 0.276 }
+      - { x: 0.680, y: 0.276 }
+      - { x: 0.680, y: 0.724 }
+      - { x: 0.320, y: 0.724 }
+    description: >
+      Vertical movement corridor connecting top and bottom aisles, running
+      between the fragrance island and makeup service units.
+
+  - zone_id: CHECKOUT_APPROACH
+    zone_name: Checkout Approach Path
+    zone_type: path
+    category: movement
+    priority: 18
+    is_staff_only: false
+    department_map: null
+    color: "#F59E0B"
+    capabilities:
+      footfall: false
+      dwell: true
+      heatmap: true
+      conversion: true
+      queue: false
+      crowd: true
+    polygon:
+      - { x: 0.680, y: 0.200 }
+      - { x: 0.870, y: 0.200 }
+      - { x: 0.870, y: 0.800 }
+      - { x: 0.680, y: 0.800 }
+    description: >
+      2000 mm approach corridor from makeup units to cash counter.
+      Tracks customers transitioning from browsing to purchase intent.
+
+  # =========================================================================
+  # 3. BILLING / CHECKOUT / QUEUE AREAS
+  # =========================================================================
+
+  - zone_id: CHECKOUT
+    zone_name: Cash Counter — Billing
+    zone_type: checkout
+    category: conversion
+    priority: 90
+    is_staff_only: false
+    department_map: null
+    color: "#DC2626"
+    capabilities:
+      footfall: false
+      dwell: true
+      heatmap: true
+      conversion: true
+      queue: false
+      crowd: false
+    dwell:
+      conversion_min_sec: 15
+    polygon:
+      - { x: 0.870, y: 0.176 }
+      - { x: 0.970, y: 0.176 }
+      - { x: 0.970, y: 0.699 }
+      - { x: 0.870, y: 0.699 }
+    description: >
+      Cash counter on right wall (710 mm from top shelf row, 1210 mm from
+      bottom shelf row). POS correlation anchor for conversion rate. Includes
+      55-inch LED panel area behind cashier.
+
+  - zone_id: QUEUE_CHECKOUT
+    zone_name: Checkout Queue Lane
+    zone_type: queue
+    category: queue
+    priority: 85
+    is_staff_only: false
+    department_map: null
+    color: "#F97316"
+    capabilities:
+      footfall: false
+      dwell: true
+      heatmap: true
+      conversion: true
+      queue: true
+      crowd: true
+    queue:
+      max_length: 8
+      alert_length: 4
+      avg_service_time_sec: 180
+    crowd:
+      max_occupancy: 8
+      alert_threshold: 6
+    polygon:
+      - { x: 0.780, y: 0.220 }
+      - { x: 0.870, y: 0.220 }
+      - { x: 0.870, y: 0.680 }
+      - { x: 0.780, y: 0.680 }
+    description: >
+      Queue waiting lane directly in front of the cash counter. Used for
+      queue length detection, wait-time estimation, and crowd alerts.
+
+  - zone_id: QUEUE_BUFFER
+    zone_name: Queue Buffer / Overflow
+    zone_type: queue
+    category: queue
+    priority: 80
+    is_staff_only: false
+    department_map: null
+    color: "#FB923C"
+    capabilities:
+      footfall: false
+      dwell: true
+      heatmap: true
+      conversion: false
+      queue: true
+      crowd: true
+    queue:
+      max_length: 6
+      alert_length: 5
+    polygon:
+      - { x: 0.680, y: 0.220 }
+      - { x: 0.780, y: 0.220 }
+      - { x: 0.780, y: 0.680 }
+      - { x: 0.680, y: 0.680 }
+    description: >
+      Overflow queue area when checkout lane is full. Extends into the
+      checkout approach corridor.
+
+  # =========================================================================
+  # 4. WAITING / SERVICE AREAS
+  # =========================================================================
+
+  - zone_id: MAKEUP_SERVICE
+    zone_name: Makeup Service Stations
+    zone_type: service
+    category: waiting
+    priority: 50
+    is_staff_only: false
+    department_map: makeup
+    color: "#EC4899"
+    capabilities:
+      footfall: false
+      dwell: true
+      heatmap: true
+      conversion: false
+      queue: false
+      crowd: false
+    dwell:
+      service_min_sec: 120
+    polygon:
+      - { x: 0.592, y: 0.260 }
+      - { x: 0.680, y: 0.260 }
+      - { x: 0.680, y: 0.516 }
+      - { x: 0.592, y: 0.516 }
+    description: >
+      Back-to-back makeup units with customer chairs. High-dwell service
+      area; customers sit for trials and consultations.
+
+  - zone_id: MAKEUP_WAITING
+    zone_name: Makeup Waiting Area
+    zone_type: waiting
+    category: waiting
+    priority: 45
+    is_staff_only: false
+    department_map: makeup
+    color: "#F472B6"
+    capabilities:
+      footfall: false
+      dwell: true
+      heatmap: true
+      conversion: false
+      queue: true
+      crowd: true
+    queue:
+      max_length: 4
+      alert_length: 3
+    polygon:
+      - { x: 0.560, y: 0.516 }
+      - { x: 0.680, y: 0.516 }
+      - { x: 0.680, y: 0.600 }
+      - { x: 0.560, y: 0.600 }
+    description: >
+      Standing/waiting area adjacent to makeup service chairs for customers
+      queued for consultation.
+
+  - zone_id: FRAGRANCE_NAIL
+    zone_name: Fragrance & Nail Island
+    zone_type: service
+    category: product
+    priority: 50
+    is_staff_only: false
+    department_map: fragrance
+    color: "#A855F7"
+    capabilities:
+      footfall: false
+      dwell: true
+      heatmap: true
+      conversion: false
+      queue: false
+      crowd: false
+    polygon:
+      - { x: 0.346, y: 0.276 }
+      - { x: 0.413, y: 0.276 }
+      - { x: 0.413, y: 0.500 }
+      - { x: 0.346, y: 0.500 }
+    description: >
+      Central island gondola (500×900 mm) at 2594 mm from left wall.
+      Fragrance and nail unit; 1110 mm clearance to top and bottom aisles.
+
+  # =========================================================================
+  # 5. TOP PERIMETER — Skincare / Korean Brands
+  # =========================================================================
+
+  - zone_id: EB_KOREAN
+    zone_name: EB Korean
+    zone_type: brand
+    category: product
+    priority: 40
+    is_staff_only: false
+    department_map: skin
+    brand_name: EB Korean
+    color: "#16A34A"
+    capabilities:
+      footfall: false
+      dwell: true
+      heatmap: true
+      conversion: false
+      queue: false
+      crowd: false
+    polygon:
+      - { x: 0.120, y: 0.050 }
+      - { x: 0.215, y: 0.050 }
+      - { x: 0.215, y: 0.150 }
+      - { x: 0.120, y: 0.150 }
+
+  - zone_id: FACE_SHOP
+    zone_name: The Face Shop
+    zone_type: brand
+    category: product
+    priority: 40
+    is_staff_only: false
+    department_map: skin
+    brand_name: The Face Shop
+    color: "#16A34A"
+    capabilities:
+      footfall: false
+      dwell: true
+      heatmap: true
+      conversion: false
+      queue: false
+      crowd: false
+    polygon:
+      - { x: 0.215, y: 0.050 }
+      - { x: 0.310, y: 0.050 }
+      - { x: 0.310, y: 0.150 }
+      - { x: 0.215, y: 0.150 }
+
+  - zone_id: GOOD_VIBES
+    zone_name: Good Vibes
+    zone_type: brand
+    category: product
+    priority: 40
+    is_staff_only: false
+    department_map: skin
+    brand_name: Good Vibes
+    color: "#16A34A"
+    capabilities:
+      footfall: false
+      dwell: true
+      heatmap: true
+      conversion: false
+      queue: false
+      crowd: false
+    polygon:
+      - { x: 0.310, y: 0.050 }
+      - { x: 0.405, y: 0.050 }
+      - { x: 0.405, y: 0.150 }
+      - { x: 0.310, y: 0.150 }
+
+  - zone_id: DERMDOC
+    zone_name: DermDoc
+    zone_type: brand
+    category: product
+    priority: 40
+    is_staff_only: false
+    department_map: skin
+    brand_name: DERMDOC
+    color: "#16A34A"
+    capabilities:
+      footfall: false
+      dwell: true
+      heatmap: true
+      conversion: false
+      queue: false
+      crowd: false
+    polygon:
+      - { x: 0.405, y: 0.050 }
+      - { x: 0.500, y: 0.050 }
+      - { x: 0.500, y: 0.150 }
+      - { x: 0.405, y: 0.150 }
+
+  - zone_id: MINIMALIST
+    zone_name: Minimalist
+    zone_type: brand
+    category: product
+    priority: 40
+    is_staff_only: false
+    department_map: skin
+    brand_name: Minimalist
+    color: "#16A34A"
+    capabilities:
+      footfall: false
+      dwell: true
+      heatmap: true
+      conversion: false
+      queue: false
+      crowd: false
+    polygon:
+      - { x: 0.500, y: 0.050 }
+      - { x: 0.595, y: 0.050 }
+      - { x: 0.595, y: 0.150 }
+      - { x: 0.500, y: 0.150 }
+
+  - zone_id: AQUALOGICA
+    zone_name: Aqualogica
+    zone_type: brand
+    category: product
+    priority: 40
+    is_staff_only: false
+    department_map: skin
+    brand_name: Aqualogica
+    color: "#16A34A"
+    capabilities:
+      footfall: false
+      dwell: true
+      heatmap: true
+      conversion: false
+      queue: false
+      crowd: false
+    polygon:
+      - { x: 0.595, y: 0.050 }
+      - { x: 0.690, y: 0.050 }
+      - { x: 0.690, y: 0.150 }
+      - { x: 0.595, y: 0.150 }
+
+  - zone_id: LAKME_SKIN
+    zone_name: Lakme Skin
+    zone_type: brand
+    category: product
+    priority: 40
+    is_staff_only: false
+    department_map: skin
+    brand_name: Lakme
+    color: "#16A34A"
+    capabilities:
+      footfall: false
+      dwell: true
+      heatmap: true
+      conversion: false
+      queue: false
+      crowd: false
+    polygon:
+      - { x: 0.690, y: 0.050 }
+      - { x: 0.760, y: 0.050 }
+      - { x: 0.760, y: 0.150 }
+      - { x: 0.690, y: 0.150 }
+
+  - zone_id: ACCESSORIES
+    zone_name: Accessories
+    zone_type: brand
+    category: product
+    priority: 40
+    is_staff_only: false
+    department_map: makeup
+    brand_name: Accessories
+    color: "#2563EB"
+    capabilities:
+      footfall: false
+      dwell: true
+      heatmap: true
+      conversion: false
+      queue: false
+      crowd: false
+    polygon:
+      - { x: 0.760, y: 0.050 }
+      - { x: 0.880, y: 0.050 }
+      - { x: 0.880, y: 0.150 }
+      - { x: 0.760, y: 0.150 }
+    description: >
+      Blue-coded accessories bay; 900 mm from right wall per floor plan.
+
+  # =========================================================================
+  # 6. BOTTOM PERIMETER — Makeup / Hair Brands
+  # =========================================================================
+
+  - zone_id: MAYBELLINE
+    zone_name: Maybelline
+    zone_type: brand
+    category: product
+    priority: 40
+    is_staff_only: false
+    department_map: makeup
+    brand_name: Maybelline
+    color: "#FB7185"
+    capabilities:
+      footfall: false
+      dwell: true
+      heatmap: true
+      conversion: false
+      queue: false
+      crowd: false
+    polygon:
+      - { x: 0.120, y: 0.850 }
+      - { x: 0.215, y: 0.850 }
+      - { x: 0.215, y: 0.950 }
+      - { x: 0.120, y: 0.950 }
+
+  - zone_id: FACES_CANADA
+    zone_name: Faces Canada
+    zone_type: brand
+    category: product
+    priority: 40
+    is_staff_only: false
+    department_map: makeup
+    brand_name: Faces Canada
+    color: "#FB7185"
+    capabilities:
+      footfall: false
+      dwell: true
+      heatmap: true
+      conversion: false
+      queue: false
+      crowd: false
+    polygon:
+      - { x: 0.215, y: 0.850 }
+      - { x: 0.310, y: 0.850 }
+      - { x: 0.310, y: 0.950 }
+      - { x: 0.215, y: 0.950 }
+
+  - zone_id: LAKME
+    zone_name: Lakme
+    zone_type: brand
+    category: product
+    priority: 40
+    is_staff_only: false
+    department_map: makeup
+    brand_name: Lakme
+    color: "#FB7185"
+    capabilities:
+      footfall: false
+      dwell: true
+      heatmap: true
+      conversion: false
+      queue: false
+      crowd: false
+    polygon:
+      - { x: 0.310, y: 0.850 }
+      - { x: 0.405, y: 0.850 }
+      - { x: 0.405, y: 0.950 }
+      - { x: 0.310, y: 0.950 }
+
+  - zone_id: COLORBAR_SUGAR
+    zone_name: Colorbar + Sugar
+    zone_type: brand
+    category: product
+    priority: 40
+    is_staff_only: false
+    department_map: makeup
+    brand_name: Colorbar
+    color: "#FB7185"
+    capabilities:
+      footfall: false
+      dwell: true
+      heatmap: true
+      conversion: false
+      queue: false
+      crowd: false
+    polygon:
+      - { x: 0.405, y: 0.850 }
+      - { x: 0.500, y: 0.850 }
+      - { x: 0.500, y: 0.950 }
+      - { x: 0.405, y: 0.950 }
+
+  - zone_id: SWISS_BEAUTY
+    zone_name: Swiss Beauty
+    zone_type: brand
+    category: product
+    priority: 40
+    is_staff_only: false
+    department_map: makeup
+    brand_name: Swiss Beauty
+    color: "#FB7185"
+    capabilities:
+      footfall: false
+      dwell: true
+      heatmap: true
+      conversion: false
+      queue: false
+      crowd: false
+    polygon:
+      - { x: 0.500, y: 0.850 }
+      - { x: 0.595, y: 0.850 }
+      - { x: 0.595, y: 0.950 }
+      - { x: 0.500, y: 0.950 }
+
+  - zone_id: RENEE_NYBAE
+    zone_name: Renee & NY Bae
+    zone_type: brand
+    category: product
+    priority: 40
+    is_staff_only: false
+    department_map: makeup
+    brand_name: NY Bae
+    color: "#FB7185"
+    capabilities:
+      footfall: false
+      dwell: true
+      heatmap: true
+      conversion: false
+      queue: false
+      crowd: false
+    polygon:
+      - { x: 0.595, y: 0.850 }
+      - { x: 0.690, y: 0.850 }
+      - { x: 0.690, y: 0.950 }
+      - { x: 0.595, y: 0.950 }
+
+  - zone_id: ALPS_GOODNESS
+    zone_name: Alps Goodness
+    zone_type: brand
+    category: product
+    priority: 40
+    is_staff_only: false
+    department_map: hair
+    brand_name: Alps Goodness
+    color: "#EAB308"
+    capabilities:
+      footfall: false
+      dwell: true
+      heatmap: true
+      conversion: false
+      queue: false
+      crowd: false
+    polygon:
+      - { x: 0.690, y: 0.850 }
+      - { x: 0.780, y: 0.850 }
+      - { x: 0.780, y: 0.950 }
+      - { x: 0.690, y: 0.950 }
+
+  - zone_id: STREAX
+    zone_name: Streax
+    zone_type: brand
+    category: product
+    priority: 40
+    is_staff_only: false
+    department_map: hair
+    brand_name: Streax
+    color: "#EAB308"
+    capabilities:
+      footfall: false
+      dwell: true
+      heatmap: true
+      conversion: false
+      queue: false
+      crowd: false
+    polygon:
+      - { x: 0.780, y: 0.850 }
+      - { x: 0.880, y: 0.850 }
+      - { x: 0.880, y: 0.950 }
+      - { x: 0.780, y: 0.950 }
+    description: >
+      725 mm from right wall per floor plan.
+
+  # =========================================================================
+  # 7. STAFF-ONLY AREAS (excluded from footfall & conversion)
+  # =========================================================================
+
+  - zone_id: STAFF_PMU
+    zone_name: PMU Station (Staff Only)
+    zone_type: staff
+    category: staff
+    priority: 95
+    is_staff_only: true
+    department_map: null
+    color: "#1E40AF"
+    capabilities:
+      footfall: false
+      dwell: true
+      heatmap: false
+      conversion: false
+      queue: false
+      crowd: false
+    polygon:
+      - { x: 0.820, y: 0.820 }
+      - { x: 0.920, y: 0.820 }
+      - { x: 0.920, y: 0.950 }
+      - { x: 0.820, y: 0.950 }
+    description: >
+      Permanent makeup station in bottom-right corner (725 mm from bottom
+      wall, 900 mm from right wall). Triggers customer-in-staff-zone anomaly.
+
+  - zone_id: STAFF_BACKOFFICE
+    zone_name: Staff Back-of-Counter
+    zone_type: staff
+    category: staff
+    priority: 95
+    is_staff_only: true
+    department_map: null
+    color: "#1E3A8A"
+    capabilities:
+      footfall: false
+      dwell: true
+      heatmap: false
+      conversion: false
+      queue: false
+      crowd: false
+    polygon:
+      - { x: 0.920, y: 0.176 }
+      - { x: 0.990, y: 0.176 }
+      - { x: 0.990, y: 0.699 }
+      - { x: 0.920, y: 0.699 }
+    description: >
+      Area behind cash counter where staff operate POS. Used for staff
+      classification; excluded from customer footfall counts.
+
+# ---------------------------------------------------------------------------
+# Customer movement paths (logical graph for path analytics)
+# ---------------------------------------------------------------------------
+movement_paths:
+  - path_id: PATH_ENTRY_TO_CHECKOUT
+    name: Entry → Browse → Checkout (Primary Conversion Path)
+    nodes:
+      - ENTRY_GATE
+      - FOH_ENTRY_BUFFER
+      - FOH_MAIN
+      - CHECKOUT_APPROACH
+      - QUEUE_CHECKOUT
+      - CHECKOUT
+    use_cases: [conversion_rate, path_analysis, funnel]
+
+  - path_id: PATH_ENTRY_TOP_AISLE
+    name: Entry → Top Skincare Wall
+    nodes:
+      - ENTRY_GATE
+      - FOH_ENTRY_BUFFER
+      - TOP_AISLE
+      - EB_KOREAN
+      - FACE_SHOP
+      - GOOD_VIBES
+      - DERMDOC
+      - MINIMALIST
+      - AQUALOGICA
+      - LAKME_SKIN
+      - ACCESSORIES
+    use_cases: [heatmap, dwell, department_affinity]
+
+  - path_id: PATH_ENTRY_BOTTOM_AISLE
+    name: Entry → Bottom Makeup Wall
+    nodes:
+      - ENTRY_GATE
+      - FOH_ENTRY_BUFFER
+      - BOTTOM_AISLE
+      - MAYBELLINE
+      - FACES_CANADA
+      - LAKME
+      - COLORBAR_SUGAR
+      - SWISS_BEAUTY
+      - RENEE_NYBAE
+      - ALPS_GOODNESS
+      - STREAX
+    use_cases: [heatmap, dwell, department_affinity]
+
+  - path_id: PATH_ENTRY_FRAGRANCE
+    name: Entry → Fragrance Island
+    nodes:
+      - ENTRY_GATE
+      - FOH_MAIN
+      - CENTER_AISLE
+      - FRAGRANCE_NAIL
+    use_cases: [heatmap, dwell]
+
+  - path_id: PATH_ENTRY_MAKEUP_SERVICE
+    name: Entry → Makeup Consultation
+    nodes:
+      - ENTRY_GATE
+      - FOH_MAIN
+      - CENTER_AISLE
+      - MAKEUP_WAITING
+      - MAKEUP_SERVICE
+    use_cases: [dwell, queue, waiting_time]
+
+  - path_id: PATH_CHECKOUT_EXIT
+    name: Checkout → Exit
+    nodes:
+      - CHECKOUT
+      - QUEUE_CHECKOUT
+      - CHECKOUT_APPROACH
+      - FOH_MAIN
+      - EXIT_GATE
+    use_cases: [conversion_rate, exit_count]
+
+# ---------------------------------------------------------------------------
+# Zone groups for aggregated analytics
+# ---------------------------------------------------------------------------
+zone_groups:
+  - group_id: ALL_PRODUCT
+    name: All Product Zones
+    zone_ids:
+      - EB_KOREAN
+      - FACE_SHOP
+      - GOOD_VIBES
+      - DERMDOC
+      - MINIMALIST
+      - AQUALOGICA
+      - LAKME_SKIN
+      - ACCESSORIES
+      - MAYBELLINE
+      - FACES_CANADA
+      - LAKME
+      - COLORBAR_SUGAR
+      - SWISS_BEAUTY
+      - RENEE_NYBAE
+      - ALPS_GOODNESS
+      - STREAX
+      - FRAGRANCE_NAIL
+      - MAKEUP_SERVICE
+
+  - group_id: SKIN_ZONES
+    name: Skincare Perimeter
+    zone_ids:
+      - EB_KOREAN
+      - FACE_SHOP
+      - GOOD_VIBES
+      - DERMDOC
+      - MINIMALIST
+      - AQUALOGICA
+      - LAKME_SKIN
+
+  - group_id: MAKEUP_ZONES
+    name: Makeup Perimeter + Service
+    zone_ids:
+      - MAYBELLINE
+      - FACES_CANADA
+      - LAKME
+      - COLORBAR_SUGAR
+      - SWISS_BEAUTY
+      - RENEE_NYBAE
+      - MAKEUP_SERVICE
+      - MAKEUP_WAITING
+
+  - group_id: QUEUE_ZONES
+    name: All Queue Areas
+    zone_ids:
+      - QUEUE_CHECKOUT
+      - QUEUE_BUFFER
+      - MAKEUP_WAITING
+
+  - group_id: CROWD_ZONES
+    name: Crowd Monitoring Areas
+    zone_ids:
+      - FOH_MAIN
+      - FOH_ENTRY_BUFFER
+      - TOP_AISLE
+      - BOTTOM_AISLE
+      - CENTER_AISLE
+      - QUEUE_CHECKOUT
+      - QUEUE_BUFFER
+
+  - group_id: STAFF_ZONES
+    name: Staff-Only Areas
+    zone_ids:
+      - STAFF_PMU
+      - STAFF_BACKOFFICE
+
+  - group_id: CONVERSION_ZONES
+    name: Conversion Funnel Anchors
+    zone_ids:
+      - ENTRY_GATE
+      - CHECKOUT_APPROACH
+      - QUEUE_CHECKOUT
+      - CHECKOUT
